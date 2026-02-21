@@ -1,0 +1,24 @@
+stages:
+  prepare:
+    cmd: python scripts/prepare_data.py --raw-dir data/raw --out-dir data/processed --val-frac ${params.val_frac}
+    deps:
+      - scripts/prepare_data.py
+      - params.yaml
+    outs:
+      - data/processed
+
+  train:
+    cmd: python src/train.py --data-dir data/processed --epochs ${params.epochs} --batch-size ${params.batch_size} --lr ${params.lr} --img-size ${params.img_size} --output-dir ${params.output_dir} --mlflow-uri file:./mlruns
+    deps:
+      - src/train.py
+      - src/model.py
+      - src/data.py
+      - params.yaml
+      - data/processed
+    outs:
+      - artifacts
+    params:
+      - epochs
+      - batch_size
+      - lr
+      - img_size

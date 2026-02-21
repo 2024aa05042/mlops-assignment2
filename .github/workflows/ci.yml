@@ -1,0 +1,200 @@
+name: CI
+
+# Grant Actions permission to push packages when using GitHub Container Registry
+permissions:
+  contents: read
+  packages: write
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests and generate reports
+        run: |
+          python scripts/run_tests.py
+
+      - name: Upload test reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-reports
+          path: |
+            reports/junit.xml
+            reports/report.html
+            reports/coverage.xml
+            reports/coverage_html
+
+      - name: Lint (basic)
+        run: |
+          python -c "import torch, torchvision, mlflow; print('imports ok')"
+
+      - name: Build Docker image
+        run: |
+          docker build -t cats-dogs:ci .
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests and generate reports
+        run: |
+          python scripts/run_tests.py
+
+      - name: Upload test reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-reports
+          path: |
+            reports/junit.xml
+            reports/report.html
+            reports/coverage.xml
+            reports/coverage_html
+
+      - name: Build Docker image (API)
+        run: |
+          docker build -t cats-dogs-api -f Dockerfile.api .
+
+  publish:
+    needs: test-and-build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Publish to Docker Hub (if secrets present)
+        if: ${{ secrets.DOCKER_USERNAME && secrets.DOCKER_PASSWORD }}
+        run: |
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+          docker build -t ${{ secrets.DOCKER_USERNAME }}/cats-dogs:latest -f Dockerfile.api .
+          docker push ${{ secrets.DOCKER_USERNAME }}/cats-dogs:latest
+
+      - name: Publish to GitHub Container Registry (fallback)
+        if: ${{ !secrets.DOCKER_USERNAME || !secrets.DOCKER_PASSWORD }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Logging in to GHCR as ${{ github.actor }}"
+          echo $GITHUB_TOKEN | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          IMAGE=ghcr.io/${{ github.repository_owner }}/cats-dogs:latest
+          docker build -t $IMAGE -f Dockerfile.api .
+          docker push $IMAGE
+
+  deploy:
+    needs: publish
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set image from Docker Hub
+        id: image
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+        run: |
+          if [ -n "$DOCKER_USERNAME" ]; then
+            echo "image=$DOCKER_USERNAME/cats-dogs:latest" >> $GITHUB_OUTPUT
+          else
+            echo "image=ghcr.io/${{ github.repository_owner }}/cats-dogs:latest" >> $GITHUB_OUTPUT
+          fi
+
+      # Option 1: Deploy via kubectl (requires kubeconfig in secrets)
+      - name: Deploy to Kubernetes (kubectl)
+        if: ${{ secrets.KUBECONFIG }}
+        env:
+          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG }}
+        run: |
+          # Create kubeconfig file
+          mkdir -p $HOME/.kube
+          echo "$KUBECONFIG_DATA" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+          # Update deployment with new image
+          kubectl set image deployment/cats-dogs-api \
+            cats-dogs-api=${{ steps.image.outputs.image }} \
+            --record \
+            -n default
+
+          # Wait for rollout to complete (max 5 minutes)
+          kubectl rollout status deployment/cats-dogs-api -n default --timeout=5m
+
+          # Show deployment status
+          kubectl get deployment cats-dogs-api -n default
+          kubectl get pods -n default -l app=cats-dogs-api
+
+      - name: Run smoke tests (health + prediction)
+        if: ${{ secrets.KUBECONFIG }}
+        timeout-minutes: 10
+        run: |
+          # Wait for port-forward to be ready
+          echo "Setting up port forwarding to API..."
+          kubectl port-forward -n default svc/cats-dogs-api 8001:8000 > /dev/null 2>&1 &
+          PORT_FORWARD_PID=$!
+          sleep 2
+
+          # Install smoke test dependencies
+          pip install requests
+
+          # Run smoke tests
+          python tests/smoke_test.py http://localhost:8001 --max-retries 30 --retry-delay 1
+
+          # Clean up
+          kill $PORT_FORWARD_PID 2>/dev/null || true
+
+      - name: Deployment Status
+        if: always()
+        run: |
+          echo "Deployment Status: ${{ job.status }}"
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Deployment and smoke tests successful!"
+          else
+            echo "❌ Deployment or smoke tests failed"
+            exit 1
+          fi

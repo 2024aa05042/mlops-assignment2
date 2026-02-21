@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - deployment.yaml
+  - service.yaml
+
+namespace: default
+
+images:
+  - name: cats-dogs-api
+    newName: ghcr.io/YOUR_USERNAME/cats-dogs
+    newTag: latest
+
+commonLabels:
+  app: cats-dogs-api
+  managed-by: kustomize
+
+commonAnnotations:
+  deployment.kubernetes.io/revision: "1"

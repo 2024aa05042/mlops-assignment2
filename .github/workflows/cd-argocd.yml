@@ -1,0 +1,216 @@
+name: CI/CD with Argo CD
+
+permissions:
+  contents: read
+  packages: write
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'src/**'
+      - 'Dockerfile.api'
+      - 'requirements-api.txt'
+      - 'scripts/**'
+      - '.github/workflows/**'
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: |
+          python scripts/run_tests.py
+
+      - name: Upload test reports
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: test-reports
+          path: |
+            reports/junit.xml
+            reports/report.html
+            reports/coverage.xml
+
+  build-and-publish:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      image-tag: ${{ steps.image.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: ${{ secrets.DOCKER_USERNAME && secrets.DOCKER_PASSWORD }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Log in to GHCR
+        if: ${{ !secrets.DOCKER_USERNAME }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine image name
+        id: image
+        run: |
+          if [ -n "${{ secrets.DOCKER_USERNAME }}" ]; then
+            echo "image=${{ secrets.DOCKER_USERNAME }}/cats-dogs" >> $GITHUB_OUTPUT
+            echo "tag=latest" >> $GITHUB_OUTPUT
+          else
+            echo "image=ghcr.io/${{ github.repository_owner }}/cats-dogs" >> $GITHUB_OUTPUT
+            echo "tag=latest" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.api
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: |
+            ${{ steps.image.outputs.image }}:${{ steps.image.outputs.tag }}
+            ${{ steps.image.outputs.image }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  update-manifest:
+    needs: build-and-publish
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Update kustomization image
+        run: |
+          cd k8s
+          kustomize edit set image cats-dogs-api=${{ needs.build-and-publish.outputs.image }}:${{ needs.build-and-publish.outputs.image-tag }}
+          cd -
+
+      - name: Commit and push updated manifest
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add k8s/kustomization.yaml
+          git commit -m "ci: update image to ${{ needs.build-and-publish.outputs.image }}:${{ github.sha }}" || echo "No changes to commit"
+          git push || echo "No changes to push"
+
+  deploy-argocd:
+    needs: [build-and-publish, update-manifest]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Sync Argo CD application
+        if: ${{ secrets.ARGOCD_SERVER && secrets.ARGOCD_TOKEN }}
+        run: |
+          # Install argocd CLI
+          curl -sSL -o argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          chmod +x argocd
+          
+          # Login to Argo CD
+          ./argocd login ${{ secrets.ARGOCD_SERVER }} \
+            --username admin \
+            --password ${{ secrets.ARGOCD_TOKEN }} \
+            --insecure
+          
+          # Sync application
+          ./argocd app sync cats-dogs-app --prune --wait
+          
+          # Get status
+          ./argocd app get cats-dogs-app
+
+      - name: Run smoke tests (health + prediction)
+        if: ${{ secrets.KUBECONFIG }}
+        timeout-minutes: 10
+        run: |
+          # Create kubeconfig
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+          # Wait for port-forward to be ready
+          echo "Setting up port forwarding to API..."
+          kubectl port-forward -n default svc/cats-dogs-api 8001:8000 > /dev/null 2>&1 &
+          PORT_FORWARD_PID=$!
+          sleep 2
+
+          # Install smoke test dependencies
+          pip install requests
+
+          # Run smoke tests
+          python tests/smoke_test.py http://localhost:8001 --max-retries 30 --retry-delay 1
+
+          # Clean up
+          kill $PORT_FORWARD_PID 2>/dev/null || true
+
+      - name: Deployment notification
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Deployment and smoke tests successful!"
+          else
+            echo "⚠️  Argo CD sync or smoke tests failed"
+            exit 1
+          fi
+
+  notify-slack:
+    needs: [deploy-argocd]
+    runs-on: ubuntu-latest
+    if: always() && github.ref == 'refs/heads/main'
+    steps:
+      - name: Send Slack notification
+        if: ${{ secrets.SLACK_WEBHOOK }}
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "🚀 Deployment Status",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Cats vs Dogs API Deployment*\nCommit: `${{ github.sha }}`\nStatus: ${{ job.status }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}

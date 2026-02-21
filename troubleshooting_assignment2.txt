@@ -1,0 +1,31 @@
+python -m venv venv
+venv\Scripts\activate
+
+---------------Docker image---------------------
+Run Docker Desktop
+docker build -t cats-dogs-api -f Dockerfile.api .
+docker run -p 8000:8000 cats-dogs-api
+docker run --rm -p 8000:8000 -v "${PWD}/data:/app/data" cats-dogs-api
+---------------Py tests----------------------------------------------------------
+
+python tests\run_tests.py
+
+---------------Kubernetes---------------------------------------
+From root folder---
+minikube start
+
+docker build -t cats-dogs-api -f Dockerfile.api .
+
+Load docker image to kubernetes
+minikube image load cats-dogs-api:latest
+
+
+Moount data directory into minikube---
+minikube mount "C:\BITS\MTech\Semesters\Semester3\MLOps\Assignments\Assignment2\mlops-assignment2-new\data:/minikube-host/data"
+
+kubectl delete deployment heart-api
+kubectl delete service heart-disease-service
+
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/service.yaml
+

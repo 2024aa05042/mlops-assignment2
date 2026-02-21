@@ -1,0 +1,22 @@
+FROM python:3.10-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+COPY requirements-api.txt ./
+RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements-api.txt
+
+# Copy application code
+COPY src/ ./src/
+
+# Copy trained model artifacts
+COPY artifacts/ ./artifacts/
+
+# By default the container also supports mounting a local artifacts dir at /app/artifacts
+# You can override with: -v ./artifacts:/app/artifacts when running the container
+
+EXPOSE 8000
+
+CMD ["uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000"]

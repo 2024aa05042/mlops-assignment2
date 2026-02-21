@@ -1,0 +1,14 @@
+artifact_uri: file:C:/BITS/MTech/Semesters/Semester3/MLOps/Assignments/Assignment2/mlops-assignment2-new/mlruns/963349876433843946/18685e064d7b4245b381caac3932a690/artifacts
+end_time: 1771161947279
+entry_point_name: ''
+experiment_id: '963349876433843946'
+lifecycle_stage: active
+run_id: 18685e064d7b4245b381caac3932a690
+run_name: run
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1771159622848
+status: 3
+tags: []
+user_id: Hp

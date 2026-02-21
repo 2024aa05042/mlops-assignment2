@@ -1,0 +1,13 @@
+torch
+torchvision
+mlflow
+Pillow
+scikit-learn
+numpy
+tqdm
+fastapi
+uvicorn[standard]
+python-multipart
+pytest
+pytest-html
+pytest-cov

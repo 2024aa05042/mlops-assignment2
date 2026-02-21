@@ -1,0 +1,6 @@
+epochs: 3
+batch_size: 32
+lr: 0.001
+img_size: 224
+val_frac: 0.2
+output_dir: artifacts

@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+data/raw/
+data/processed/
+.git/
+.dvc/
+*.egg-info
+dist/
+build/
+mlruns/
+venv/
+env/
+**/__pycache__

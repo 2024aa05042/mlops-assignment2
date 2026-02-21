@@ -1,0 +1,10 @@
+# Ignore typical editor/venv files
+__pycache__/
+*.py[cod]
+.vscode/
+env/
+venv/
+
+# Ignore model files and mlflow runs (tracked separately via DVC/MLflow)
+artifacts/
+mlruns/
