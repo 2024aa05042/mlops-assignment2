@@ -5,6 +5,4 @@ __pycache__/
 env/
 venv/
 .dvc/cache/
-*.pth
-*.pt
 .DS_Store
